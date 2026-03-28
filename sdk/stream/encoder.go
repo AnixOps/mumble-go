@@ -12,9 +12,9 @@ import (
 // OpusEncoder provides direct Opus encoding for the streaming sender.
 // It wraps github.com/hraban/opus to encode PCM data.
 type OpusEncoder struct {
-	enc      *opus.Encoder
+	enc       *opus.Encoder
 	frameSize int
-	bitrate  int
+	bitrate   int
 }
 
 // NewOpusEncoder creates a new Opus encoder for streaming.
@@ -29,9 +29,9 @@ func NewOpusEncoder(sampleRate, channels, frameSize, bitrate int) (*OpusEncoder,
 	}
 
 	return &OpusEncoder{
-		enc:      enc,
+		enc:       enc,
 		frameSize: frameSize,
-		bitrate:  bitrate,
+		bitrate:   bitrate,
 	}, nil
 }
 
@@ -58,6 +58,11 @@ func (e *OpusEncoder) SetBitrate(bitrate int) error {
 	}
 	e.bitrate = bitrate
 	return nil
+}
+
+// SetComplexity updates the Opus encoder complexity (0-10).
+func (e *OpusEncoder) SetComplexity(complexity int) error {
+	return e.enc.SetComplexity(complexity)
 }
 
 // Bitrate returns the current encoding bitrate.

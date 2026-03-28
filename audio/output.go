@@ -137,28 +137,10 @@ func (o *Output) Send() (int, error) {
 		return 0, nil
 	}
 
-	now := time.Now()
-
-	// Update sequence
-	if o.sequenceStart.IsZero() || now.Sub(o.lastSend) > 5*time.Second {
-		// Reset sequence after 5 second gap
-		o.sequence = 0
-		o.sequenceStart = now
-		o.lastSend = now
-		o.lastSeqTime = now
-	} else if now.Sub(o.lastSend) > FrameDurationMs*2*time.Millisecond {
-		// Calculate sequence after shorter gap
-		o.sequence = uint32(now.Sub(o.sequenceStart) / (SequenceDuration * time.Millisecond))
-		o.lastSeqTime = o.sequenceStart.Add(time.Duration(o.sequence) * SequenceDuration * time.Millisecond)
-		o.lastSend = now
-	} else {
-		// Continuous audio - increment by frames
-		o.sequence += uint32(len(o.pcmBuffer) * FrameDurationMs / SequenceDuration)
-		o.lastSend = now
-	}
+	seq := o.advanceSequenceLocked(len(o.pcmBuffer))
 
 	// Build audio packet
-	packet, err := o.buildPacket()
+	packet, err := o.buildPacket(seq)
 	if err != nil {
 		return 0, err
 	}
@@ -175,7 +157,7 @@ func (o *Output) Send() (int, error) {
 }
 
 // buildPacket constructs a UDPTunnel audio packet.
-func (o *Output) buildPacket() ([]byte, error) {
+func (o *Output) buildPacket(seq uint32) ([]byte, error) {
 	// Audio packet format for OUTGOING (TCP tunnel):
 	// [header byte: type(3bits) | target(5bits)]
 	// [varint: sequence]
@@ -213,17 +195,17 @@ func (o *Output) buildPacket() ([]byte, error) {
 
 	// Build complete audio packet
 	header := byte(AudioTypeOpus<<5) | o.target
-	seq := encodeVarint(uint64(o.sequence))
+	seqBytes := encodeVarint(uint64(seq))
 
-	audioPacket := make([]byte, 0, 1+len(seq)+len(payload))
+	audioPacket := make([]byte, 0, 1+len(seqBytes)+len(payload))
 	audioPacket = append(audioPacket, header)
-	audioPacket = append(audioPacket, seq...)
+	audioPacket = append(audioPacket, seqBytes...)
 	audioPacket = append(audioPacket, payload...)
 
 	// Debug: log audio packet details
 	if protocol.EnableDebug && len(audioPacket) > 0 {
 		log.Printf("[audio] Sending audio packet: header=0x%02x seq=%d frames=%d payload_len=%d",
-			header, o.sequence, len(o.pcmBuffer), len(payload))
+			header, seq, len(o.pcmBuffer), len(payload))
 	}
 
 	// Wrap in UDPTunnel message
@@ -267,6 +249,36 @@ func (o *Output) BufferDuration() time.Duration {
 	return time.Duration(len(o.pcmBuffer)) * FrameDurationMs * time.Millisecond
 }
 
+// advanceSequenceLocked updates the outgoing sequence number for a batch.
+func (o *Output) advanceSequenceLocked(frames int) uint32 {
+	now := time.Now()
+
+	if o.sequenceStart.IsZero() || now.Sub(o.lastSend) > 5*time.Second {
+		// Reset sequence after 5 second gap
+		o.sequence = 0
+		o.sequenceStart = now
+		o.lastSeqTime = now
+	} else if now.Sub(o.lastSend) > FrameDurationMs*2*time.Millisecond {
+		// Calculate sequence after shorter gap
+		o.sequence = uint32(now.Sub(o.sequenceStart) / (SequenceDuration * time.Millisecond))
+		o.lastSeqTime = o.sequenceStart.Add(time.Duration(o.sequence) * SequenceDuration * time.Millisecond)
+	} else {
+		// Continuous audio - increment by frames
+		o.sequence += uint32(frames * FrameDurationMs / SequenceDuration)
+	}
+
+	o.lastSend = now
+	return o.sequence
+}
+
+// AdvanceSequence updates the outgoing sequence number for a batch and returns
+// the sequence number that should be used for that batch.
+func (o *Output) AdvanceSequence(frames int) uint32 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.advanceSequenceLocked(frames)
+}
+
 // GetSequence returns the current sequence number.
 func (o *Output) GetSequence() uint32 {
 	o.mu.Lock()
@@ -288,7 +300,7 @@ func (o *Output) EncodeFrames() ([][]byte, error) {
 		return nil, nil
 	}
 
-	var encoded [][]byte
+	encoded := make([][]byte, 0, len(o.pcmBuffer))
 	for _, pcm := range o.pcmBuffer {
 		opusData, err := o.encoder.Encode(pcm)
 		if err != nil {
@@ -298,5 +310,6 @@ func (o *Output) EncodeFrames() ([][]byte, error) {
 		encoded = append(encoded, opusData)
 	}
 
+	o.pcmBuffer = nil
 	return encoded, nil
 }

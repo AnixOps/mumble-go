@@ -22,6 +22,11 @@ func (e *OpusEncoder) SetBitrate(bitrate int) error {
 	return fmt.Errorf("opus encoder: not available")
 }
 
+// SetComplexity returns an error.
+func (e *OpusEncoder) SetComplexity(complexity int) error {
+	return fmt.Errorf("opus encoder: not available")
+}
+
 // Bitrate returns 0.
 func (e *OpusEncoder) Bitrate() int {
 	return 0

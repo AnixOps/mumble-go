@@ -103,6 +103,11 @@ func (c *Client) JoinChannelByName(name string) error {
 	return c.inner.JoinChannelByName(name)
 }
 
+// SendUserState sends a raw UserState protobuf payload.
+func (c *Client) SendUserState(payload []byte) error {
+	return c.inner.SendUserState(payload)
+}
+
 func (c *Client) JoinChannel(id uint32) error {
 	return c.inner.JoinChannel(id)
 }

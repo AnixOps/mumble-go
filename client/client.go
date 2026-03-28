@@ -29,16 +29,16 @@ type Config struct {
 
 // Client is the high-level headless Mumble client.
 type Client struct {
-	cfg       Config
-	conn      *transport.Conn
-	store     *state.Store
+	cfg   Config
+	conn  *transport.Conn
+	store *state.Store
 
 	// Audio subsystem
-	audio     *Audio
+	audio      *Audio
 	udpManager *audio.UDPManager
 
 	// Event handler
-	events    *EventHandler
+	events *EventHandler
 
 	// Crypto state for audio (populated after CryptSetup)
 	cryptoKey         []byte
@@ -156,7 +156,7 @@ func (c *Client) SendAudioUDP(pcm []byte) error {
 	}
 
 	// Get starting sequence
-	seq := c.audio.Output().GetSequence()
+	seq := c.audio.Output().AdvanceSequence(len(frames))
 
 	// Send each frame individually via UDP
 	frameDuration := audio.FrameDurationMs / audio.SequenceDuration
@@ -180,6 +180,14 @@ func (c *Client) OnAudio(cb audio.AudioCallback) {
 // Connected returns true if the client has an active connection.
 func (c *Client) Connected() bool {
 	return c.conn != nil
+}
+
+// SendUserState sends a raw UserState protobuf payload.
+func (c *Client) SendUserState(payload []byte) error {
+	if c.conn == nil {
+		return fmt.Errorf("client: not connected")
+	}
+	return c.conn.WriteFrame(protocol.MessageTypeUserState, payload)
 }
 
 // JoinChannel moves the client to the specified channel.

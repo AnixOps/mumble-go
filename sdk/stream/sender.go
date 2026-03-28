@@ -8,6 +8,7 @@ import (
 
 	"mumble-go/audio"
 	"mumble-go/client"
+	"mumble-go/protocol"
 	"mumble-go/state"
 )
 
@@ -15,9 +16,21 @@ import (
 type SenderClient interface {
 	SendAudio(pcm []byte) error
 	SendAudioUDP(pcm []byte) error
+	SendUserState(payload []byte) error
 	Audio() *client.Audio
 	Events() *client.EventHandler
 	State() *state.Store
+}
+
+type streamEncoder interface {
+	Encode(pcm []byte) ([]byte, error)
+	SetBitrate(bitrate int) error
+	SetComplexity(complexity int) error
+	Close() error
+}
+
+var newStreamOpusEncoder = func(cfg *StreamConfig) (streamEncoder, error) {
+	return NewOpusEncoder(audio.SampleRate, audio.Channels, audio.FrameSize, cfg.Bitrate)
 }
 
 // StreamSender is a non-blocking audio streaming sender with jitter buffering,
@@ -40,6 +53,7 @@ type StreamSender struct {
 	reconn  *ReconnectManager
 	meta    *MetadataUpdater
 	metaCl  *metadataClient
+	encoder streamEncoder
 
 	// Channels for lifecycle
 	ctx    context.Context
@@ -58,8 +72,19 @@ func (m *metadataClient) SendUserState(marshal func() ([]byte, error)) error {
 	if err != nil {
 		return err
 	}
-	_ = data
-	return nil
+
+	us := &protocol.UserState{Comment: string(data)}
+	if st := m.sender.State(); st != nil {
+		if session := st.SelfSession(); session != 0 {
+			us.Session = session
+		}
+	}
+
+	payload, err := us.Marshal()
+	if err != nil {
+		return err
+	}
+	return m.sender.SendUserState(payload)
 }
 
 // NewStreamSender creates a new StreamSender backed by the given client.
@@ -73,13 +98,13 @@ func NewStreamSender(client SenderClient, cfg *StreamConfig) (*StreamSender, err
 	}
 
 	s := &StreamSender{
-		client:   client,
-		config:   cfg,
-		sources:  make(map[string]AudioSource),
-		mixer:    NewAudioMixer(audio.FrameSize),
-		jitter:   NewJitterBuffer(cfg.BufferDepth, audio.FrameDurationMs*time.Millisecond),
-		reconn:   NewReconnectManager(cfg),
-		stopCh:   make(chan struct{}),
+		client:  client,
+		config:  cfg,
+		sources: make(map[string]AudioSource),
+		mixer:   NewAudioMixer(audio.FrameSize),
+		jitter:  NewJitterBuffer(cfg.BufferDepth, audio.FrameDurationMs*time.Millisecond),
+		reconn:  NewReconnectManager(cfg),
+		stopCh:  make(chan struct{}),
 	}
 
 	// VAD
@@ -95,6 +120,17 @@ func NewStreamSender(client SenderClient, cfg *StreamConfig) (*StreamSender, err
 	// Metadata updater
 	s.metaCl = &metadataClient{sender: client}
 	s.meta = NewMetadataUpdater(s.metaCl)
+
+	// Direct stream encoder path
+	enc, err := newStreamOpusEncoder(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("stream sender: create encoder: %w", err)
+	}
+	if err := enc.SetComplexity(cfg.Complexity); err != nil {
+		_ = enc.Close()
+		return nil, fmt.Errorf("stream sender: set complexity: %w", err)
+	}
+	s.encoder = enc
 
 	// Wire up reconnect manager callbacks
 	s.reconn.SetReconnectingHandler(func(attempt int, nextDelay time.Duration) {
@@ -170,6 +206,9 @@ func (s *StreamSender) Stop() {
 	s.mixer.Close()
 	s.reconn.Close()
 	s.meta.Close()
+	if s.encoder != nil {
+		_ = s.encoder.Close()
+	}
 
 	ev := &s.events
 	if ev != nil && ev.OnDisconnect != nil {
@@ -278,6 +317,14 @@ func (s *StreamSender) SetConfig(cfg *StreamConfig) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	if s.encoder != nil {
+		if err := s.encoder.SetBitrate(cfg.Bitrate); err != nil {
+			return fmt.Errorf("stream sender: set bitrate: %w", err)
+		}
+		if err := s.encoder.SetComplexity(cfg.Complexity); err != nil {
+			return fmt.Errorf("stream sender: set complexity: %w", err)
+		}
+	}
 	s.mu.Lock()
 	s.config = cfg
 	s.mu.Unlock()
@@ -382,12 +429,44 @@ func (s *StreamSender) sendFrame(silence []byte, frameBytes int, seq uint64) uin
 	return seq + 1
 }
 
-// doSendAudio sends PCM audio via the client.
+// doSendAudio encodes PCM with StreamSender's Opus path and sends via UDP.
 func (s *StreamSender) doSendAudio(pcm []byte) {
-	// Try UDP first for lower latency, fall back to TCP
-	if err := s.client.SendAudioUDP(pcm); err != nil {
-		// If UDP fails, try TCP
+	s.mu.Lock()
+	enc := s.encoder
+	s.mu.Unlock()
+
+	if enc == nil {
+		ev := s.getEvents()
+		if ev != nil && ev.OnError != nil {
+			ev.OnError(fmt.Errorf("stream sender: opus encoder not initialized"))
+		}
+		return
+	}
+
+	opusData, err := enc.Encode(pcm)
+	if err != nil {
+		ev := s.getEvents()
+		if ev != nil && ev.OnError != nil {
+			ev.OnError(fmt.Errorf("stream sender: encode: %w", err))
+		}
+		return
+	}
+
+	if err := s.client.SendAudioUDP(opusData); err == nil {
+		buffered := s.reconn.PopBuffered()
+		for _, frame := range buffered {
+			if flushErr := s.client.SendAudioUDP(frame); flushErr != nil {
+				s.reconn.OnReconnectFailure(flushErr)
+				return
+			}
+		}
+		s.reconn.OnReconnectSuccess()
+		return
+	} else {
+		s.reconn.OnDisconnect()
+		s.reconn.BufferFrame(opusData)
 		if tcpErr := s.client.SendAudio(pcm); tcpErr != nil {
+			s.reconn.OnReconnectFailure(fmt.Errorf("udp send failed: %w", err))
 			ev := s.getEvents()
 			if ev != nil && ev.OnError != nil {
 				ev.OnError(fmt.Errorf("send audio (UDP:%v, TCP:%v)", err, tcpErr))

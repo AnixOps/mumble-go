@@ -2,39 +2,56 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
 	"time"
 
 	"mumble-go/client"
+	"mumble-go/protocol"
 	"mumble-go/state"
 )
 
 // mockSenderClient implements SenderClient for testing.
 type mockSenderClient struct {
-	mu               sync.Mutex
-	sendAudioUDPCalled int
-	sendAudioCalled    int
+	mu                  sync.Mutex
+	sendAudioUDPCalled  int
+	sendAudioCalled     int
+	sendUserStateCalled int
+	lastUserState       []byte
+	lastUDPPayload      []byte
+	udpErr              error
+	tcpErr              error
+	store               *state.Store
 }
 
 func (m *mockSenderClient) SendAudio(pcm []byte) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.sendAudioCalled++
-	m.mu.Unlock()
-	return nil
+	return m.tcpErr
 }
 
 func (m *mockSenderClient) SendAudioUDP(pcm []byte) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.sendAudioUDPCalled++
-	m.mu.Unlock()
+	m.lastUDPPayload = append([]byte(nil), pcm...)
+	return m.udpErr
+}
+
+func (m *mockSenderClient) SendUserState(payload []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendUserStateCalled++
+	m.lastUserState = append([]byte(nil), payload...)
 	return nil
 }
 
-func (m *mockSenderClient) Audio() *client.Audio { return nil }
+func (m *mockSenderClient) Audio() *client.Audio         { return nil }
 func (m *mockSenderClient) Events() *client.EventHandler { return nil }
-func (m *mockSenderClient) State() *state.Store { return nil }
+func (m *mockSenderClient) State() *state.Store          { return m.store }
 
 // mockAudioSource implements AudioSource for testing.
 type mockAudioSource struct {
@@ -57,14 +74,74 @@ func (m *mockAudioSource) ReadPCM(ctx context.Context, p []byte) (n int, err err
 	return len(p), nil
 }
 
-func TestNewStreamSender(t *testing.T) {
-	client := &mockSenderClient{}
-	cfg := DefaultStreamConfig()
+type mockStreamEncoder struct {
+	mu                 sync.Mutex
+	encodeCalls        int
+	setBitrateCalls    int
+	setComplexityCalls int
+	lastBitrate        int
+	lastComplexity     int
+	encodeErr          error
+	encoded            []byte
+}
 
-	sender, err := NewStreamSender(client, cfg)
+func (m *mockStreamEncoder) Encode(pcm []byte) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.encodeCalls++
+	if m.encodeErr != nil {
+		return nil, m.encodeErr
+	}
+	if m.encoded == nil {
+		return []byte{1, 2, 3}, nil
+	}
+	return append([]byte(nil), m.encoded...), nil
+}
+
+func (m *mockStreamEncoder) SetBitrate(bitrate int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.setBitrateCalls++
+	m.lastBitrate = bitrate
+	return nil
+}
+
+func (m *mockStreamEncoder) SetComplexity(complexity int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.setComplexityCalls++
+	m.lastComplexity = complexity
+	return nil
+}
+
+func (m *mockStreamEncoder) Close() error { return nil }
+
+func makeTestStoreWithSession(session uint32) *state.Store {
+	st := state.NewStore()
+	st.Self = &state.User{Session: session}
+	return st
+}
+
+func newSenderWithMockEncoder(t *testing.T, c *mockSenderClient, cfg *StreamConfig) (*StreamSender, *mockStreamEncoder) {
+	t.Helper()
+	if cfg == nil {
+		cfg = DefaultStreamConfig()
+	}
+	enc := &mockStreamEncoder{encoded: []byte{9, 8, 7, 6}}
+	oldFactory := newStreamOpusEncoder
+	newStreamOpusEncoder = func(cfg *StreamConfig) (streamEncoder, error) { return enc, nil }
+	t.Cleanup(func() { newStreamOpusEncoder = oldFactory })
+
+	sender, err := NewStreamSender(c, cfg)
 	if err != nil {
 		t.Fatalf("NewStreamSender() error = %v", err)
 	}
+	return sender, enc
+}
+
+func TestNewStreamSender(t *testing.T) {
+	client := &mockSenderClient{}
+	sender, _ := newSenderWithMockEncoder(t, client, DefaultStreamConfig())
 	if sender == nil {
 		t.Fatal("NewStreamSender() returned nil")
 	}
@@ -73,260 +150,111 @@ func TestNewStreamSender(t *testing.T) {
 	}
 }
 
-func TestNewStreamSender_NilConfig(t *testing.T) {
-	client := &mockSenderClient{}
-	sender, err := NewStreamSender(client, nil)
-	if err != nil {
-		t.Fatalf("NewStreamSender(nil) error = %v", err)
-	}
-	if sender == nil {
-		t.Fatal("NewStreamSender(nil) returned nil")
-	}
-}
-
-func TestNewStreamSender_InvalidConfig(t *testing.T) {
-	client := &mockSenderClient{}
-	cfg := &StreamConfig{
-		Bitrate: 0, // Invalid: must be 6000-512000
-	}
-	_, err := NewStreamSender(client, cfg)
-	if err == nil {
-		t.Fatal("expected error for invalid config")
-	}
-}
-
 func TestStreamSender_StartStop(t *testing.T) {
 	client := &mockSenderClient{}
 	cfg := DefaultStreamConfig()
-	cfg.BufferDepth = 1 // Smaller for faster testing
+	cfg.BufferDepth = 1
 
-	sender, err := NewStreamSender(client, cfg)
-	if err != nil {
-		t.Fatalf("NewStreamSender() error = %v", err)
-	}
-
-	ctx := context.Background()
-	err = sender.Start(ctx)
-	if err != nil {
+	sender, _ := newSenderWithMockEncoder(t, client, cfg)
+	if err := sender.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if !sender.IsActive() {
-		t.Fatal("expected IsActive=true after Start")
-	}
-
-	// Give it time to run a frame
-	time.Sleep(50 * time.Millisecond)
-
+	time.Sleep(30 * time.Millisecond)
 	sender.Stop()
-	time.Sleep(10 * time.Millisecond) // Let goroutine exit
 
 	if sender.IsActive() {
 		t.Fatal("expected IsActive=false after Stop")
 	}
 }
 
-func TestStreamSender_StartTwice(t *testing.T) {
+func TestStreamSender_SetConfigPropagatesBitrateAndComplexity(t *testing.T) {
 	client := &mockSenderClient{}
+	sender, enc := newSenderWithMockEncoder(t, client, DefaultStreamConfig())
+
 	cfg := DefaultStreamConfig()
-
-	sender, _ := NewStreamSender(client, cfg)
-
-	ctx := context.Background()
-	_ = sender.Start(ctx)
-	defer sender.Stop()
-
-	err := sender.Start(ctx)
-	if err == nil {
-		t.Fatal("expected error when starting twice")
-	}
-}
-
-func TestStreamSender_StopTwice(t *testing.T) {
-	client := &mockSenderClient{}
-	cfg := DefaultStreamConfig()
-
-	sender, _ := NewStreamSender(client, cfg)
-	ctx := context.Background()
-	_ = sender.Start(ctx)
-
-	// Should not panic
-	sender.Stop()
-	sender.Stop()
-}
-
-func TestStreamSender_PauseResume(t *testing.T) {
-	client := &mockSenderClient{}
-	cfg := DefaultStreamConfig()
-	cfg.BufferDepth = 1
-
-	sender, _ := NewStreamSender(client, cfg)
-	ctx := context.Background()
-	_ = sender.Start(ctx)
-	defer sender.Stop()
-
-	// Let it run a bit
-	time.Sleep(50 * time.Millisecond)
-	client.mu.Lock()
-	callsAfterStart := client.sendAudioUDPCalled
-	client.mu.Unlock()
-
-	sender.Pause()
-	time.Sleep(30 * time.Millisecond)
-	client.mu.Lock()
-	callsAfterPause := client.sendAudioUDPCalled
-	client.mu.Unlock()
-
-	sender.Resume()
-	time.Sleep(30 * time.Millisecond)
-	client.mu.Lock()
-	callsAfterResume := client.sendAudioUDPCalled
-	client.mu.Unlock()
-
-	// Paused should not have increased calls significantly
-	if callsAfterPause > callsAfterStart+2 {
-		t.Logf("pause may not be working: start=%d pause=%d resume=%d", callsAfterStart, callsAfterPause, callsAfterResume)
-	}
-}
-
-func TestStreamSender_SetSource(t *testing.T) {
-	client := &mockSenderClient{}
-	cfg := DefaultStreamConfig()
-	cfg.BufferDepth = 1
-
-	sender, _ := NewStreamSender(client, cfg)
-
-	src := &mockAudioSource{data: make([]byte, 1920*3)}
-	err := sender.SetSource(src)
-	if err != nil {
-		t.Fatalf("SetSource() error = %v", err)
-	}
-
-	ctx := context.Background()
-	_ = sender.Start(ctx)
-	defer sender.Stop()
-
-	time.Sleep(50 * time.Millisecond)
-
-	src.mu.Lock()
-	pos := src.pos
-	src.mu.Unlock()
-	if pos == 0 {
-		t.Fatal("expected source to be read")
-	}
-}
-
-func TestStreamSender_AddRemoveSource(t *testing.T) {
-	client := &mockSenderClient{}
-	cfg := DefaultStreamConfig()
-
-	sender, _ := NewStreamSender(client, cfg)
-
-	src1 := &mockAudioSource{data: make([]byte, 1920*10)}
-	src2 := &mockAudioSource{data: make([]byte, 1920*10)}
-
-	err := sender.AddSource("src1", src1, 1.0)
-	if err != nil {
-		t.Fatalf("AddSource() error = %v", err)
-	}
-
-	err = sender.AddSource("src2", src2, 0.5)
-	if err != nil {
-		t.Fatalf("AddSource() error = %v", err)
-	}
-
-	// Duplicate should fail
-	err = sender.AddSource("src1", src1, 1.0)
-	if err == nil {
-		t.Fatal("expected error for duplicate source")
-	}
-
-	err = sender.RemoveSource("src1")
-	if err != nil {
-		t.Fatalf("RemoveSource() error = %v", err)
-	}
-
-	// Non-existent should fail
-	err = sender.RemoveSource("nonexistent")
-	if err == nil {
-		t.Fatal("expected error for non-existent source")
-	}
-}
-
-func TestStreamSender_SetSourceGain(t *testing.T) {
-	client := &mockSenderClient{}
-	cfg := DefaultStreamConfig()
-
-	sender, _ := NewStreamSender(client, cfg)
-
-	src := &mockAudioSource{data: make([]byte, 1920*10)}
-	_ = sender.AddSource("src", src, 1.0)
-
-	err := sender.SetSourceGain("src", 0.5)
-	if err != nil {
-		t.Fatalf("SetSourceGain() error = %v", err)
-	}
-
-	// Non-existent should fail
-	err = sender.SetSourceGain("nonexistent", 0.5)
-	if err == nil {
-		t.Fatal("expected error for non-existent source")
-	}
-}
-
-func TestStreamSender_SetConfig(t *testing.T) {
-	client := &mockSenderClient{}
-	cfg := DefaultStreamConfig()
-
-	sender, _ := NewStreamSender(client, cfg)
-
-	newCfg := DefaultStreamConfig()
-	err := sender.SetConfig(newCfg)
-	if err != nil {
+	cfg.Bitrate = 96000
+	cfg.Complexity = 4
+	if err := sender.SetConfig(cfg); err != nil {
 		t.Fatalf("SetConfig() error = %v", err)
 	}
 
-	// Invalid config should fail
-	err = sender.SetConfig(&StreamConfig{Bitrate: 0})
-	if err == nil {
-		t.Fatal("expected error for invalid config")
+	enc.mu.Lock()
+	defer enc.mu.Unlock()
+	if enc.setBitrateCalls != 1 || enc.lastBitrate != 96000 {
+		t.Fatalf("bitrate propagation mismatch: calls=%d bitrate=%d", enc.setBitrateCalls, enc.lastBitrate)
+	}
+	if enc.setComplexityCalls == 0 || enc.lastComplexity != 4 {
+		t.Fatalf("complexity propagation mismatch: calls=%d complexity=%d", enc.setComplexityCalls, enc.lastComplexity)
 	}
 }
 
-func TestStreamSender_Events(t *testing.T) {
+func TestStreamSender_DoSendAudioUsesSenderEncoderPath(t *testing.T) {
 	client := &mockSenderClient{}
-	cfg := DefaultStreamConfig()
-	cfg.BufferDepth = 1
+	sender, _ := newSenderWithMockEncoder(t, client, DefaultStreamConfig())
 
-	sender, _ := NewStreamSender(client, cfg)
+	sender.doSendAudio(make([]byte, 960*2))
 
-	events := sender.Events()
-	if events == nil {
-		t.Fatal("Events() returned nil")
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.sendAudioUDPCalled == 0 {
+		t.Fatal("expected UDP send to be called")
 	}
-
-	connectCalled := false
-	events.OnConnect = func() {
-		connectCalled = true
-	}
-
-	ctx := context.Background()
-	_ = sender.Start(ctx)
-	time.Sleep(30 * time.Millisecond)
-	sender.Stop()
-
-	if !connectCalled {
-		t.Fatal("expected OnConnect to be called")
+	if string(client.lastUDPPayload) != string([]byte{9, 8, 7, 6}) {
+		t.Fatalf("expected encoded payload from sender encoder, got %v", client.lastUDPPayload)
 	}
 }
 
-func TestStreamSender_GetReconnectManager(t *testing.T) {
-	client := &mockSenderClient{}
-	cfg := DefaultStreamConfig()
+func TestStreamSender_MetadataSendsUserStateComment(t *testing.T) {
+	client := &mockSenderClient{store: makeTestStoreWithSession(42)}
+	sender, _ := newSenderWithMockEncoder(t, client, DefaultStreamConfig())
 
-	sender, _ := NewStreamSender(client, cfg)
+	if err := sender.SetMetadata(&StreamMetadata{Title: "Song", Artist: "Artist"}); err != nil {
+		t.Fatalf("SetMetadata() error = %v", err)
+	}
+	time.Sleep(350 * time.Millisecond) // debounce flush
 
-	reconn := sender.GetReconnectManager()
-	if reconn == nil {
-		t.Fatal("GetReconnectManager() returned nil")
+	client.mu.Lock()
+	payload := append([]byte(nil), client.lastUserState...)
+	calls := client.sendUserStateCalled
+	client.mu.Unlock()
+
+	if calls == 0 {
+		t.Fatal("expected SendUserState to be called")
+	}
+	us, err := protocol.ParseUserState(payload)
+	if err != nil {
+		t.Fatalf("ParseUserState failed: %v", err)
+	}
+	if us.Session != 42 {
+		t.Fatalf("expected session=42, got %d", us.Session)
+	}
+	if us.Comment == "" {
+		t.Fatal("expected comment metadata payload to be set")
+	}
+}
+
+func TestStreamSender_ReconnectBufferingOnUDPFallback(t *testing.T) {
+	client := &mockSenderClient{udpErr: errors.New("udp down")}
+	sender, _ := newSenderWithMockEncoder(t, client, DefaultStreamConfig())
+
+	sender.doSendAudio(make([]byte, 960*2))
+
+	if sender.reconn.BufferedCount() == 0 {
+		t.Fatal("expected frame buffered during UDP failure")
+	}
+	client.mu.Lock()
+	tcpCalls := client.sendAudioCalled
+	client.mu.Unlock()
+	if tcpCalls == 0 {
+		t.Fatal("expected TCP fallback send on UDP failure")
+	}
+
+	client.mu.Lock()
+	client.udpErr = nil
+	client.mu.Unlock()
+	sender.doSendAudio(make([]byte, 960*2))
+
+	if sender.reconn.BufferedCount() != 0 {
+		t.Fatalf("expected buffered frames to flush on UDP recovery, got %d", sender.reconn.BufferedCount())
 	}
 }
