@@ -7,61 +7,80 @@ import (
 )
 
 // StreamingSource uses yt-dlp + ffmpeg to stream audio from arbitrary URLs
-// (SoundCloud, YouTube, etc.) directly to PCM without intermediate files.
+// (SoundCloud, YouTube, etc.) directly to PCM.
 type StreamingSource struct {
-	cmd    *exec.Cmd
-	stdout io.ReadCloser
+	ffmpeg    *exec.Cmd
+	ytDl      *exec.Cmd
+	stdout    io.ReadCloser
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 // NewStreamingSource creates a streaming source that decodes audio from a URL
 // using yt-dlp to resolve the URL and ffmpeg to transcode to PCM.
 func NewStreamingSource(ctx context.Context, url string) (*StreamingSource, error) {
-	// Use yt-dlp with ffmpeg output to pipe directly to PCM
-	// This handles authentication, HLS playlists, etc. automatically
-	cmd := exec.CommandContext(ctx, resolveTool("yt-dlp"),
+	ctx, cancel := context.WithCancel(ctx)
+
+	// First get the stream URL with yt-dlp
+	ytDl := exec.CommandContext(ctx, resolveTool("yt-dlp"),
 		"--no-playlist",
 		"-o", "-",
 		"-f", "bestaudio[ext=opus]/bestaudio/best",
 		"--",
 		url,
 	)
-	cmd.Stderr = nil // suppress yt-dlp output
 
-	// Pipe yt-dlp output to ffmpeg for transcoding to PCM
-	ffmpegCmd := exec.CommandContext(ctx, resolveTool("ffmpeg"),
+	// ffmpeg reads from yt-dlp's stdout
+	ffmpeg := exec.CommandContext(ctx, resolveTool("ffmpeg"),
 		"-nostdin",
-		"-loglevel", "error",
+		"-loglevel", "info",
 		"-i", "pipe:0",
 		"-f", "s16le",
 		"-ar", "48000",
 		"-ac", "1",
 		"pipe:1",
 	)
-	ffmpegCmd.Stdin, _ = cmd.StdoutPipe()
 
-	stdout, err := ffmpegCmd.StdoutPipe()
+	// Connect yt-dlp stdout to ffmpeg stdin
+	pipe, err := ytDl.StdoutPipe()
 	if err != nil {
-		cmd.Process.Kill()
+		cancel()
+		return nil, err
+	}
+	ffmpeg.Stdin = pipe
+
+	// ffmpeg stdout for reading PCM
+	stdout, err := ffmpeg.StdoutPipe()
+	if err != nil {
+		pipe.Close()
+		cancel()
 		return nil, err
 	}
 
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	if err := ffmpegCmd.Start(); err != nil {
-		cmd.Process.Kill()
+	// Start yt-dlp first
+	if err := ytDl.Start(); err != nil {
+		stdout.Close()
+		pipe.Close()
+		cancel()
 		return nil, err
 	}
 
-	// Clean up processes when done
-	go func() {
-		ffmpegCmd.Wait()
-		cmd.Wait()
-	}()
+	// Start ffmpeg
+	if err := ffmpeg.Start(); err != nil {
+		ytDl.Process.Kill()
+		ytDl.Wait()
+		stdout.Close()
+		pipe.Close()
+		cancel()
+		return nil, err
+	}
 
 	return &StreamingSource{
-		cmd:    ffmpegCmd,
-		stdout: stdout,
+		ffmpeg:  ffmpeg,
+		ytDl:    ytDl,
+		stdout:  stdout,
+		ctx:     ctx,
+		cancel:  cancel,
 	}, nil
 }
 
@@ -69,18 +88,26 @@ func (s *StreamingSource) ReadPCM(ctx context.Context, dst []byte) (int, error) 
 	select {
 	case <-ctx.Done():
 		return 0, ctx.Err()
+	case <-s.ctx.Done():
+		return 0, s.ctx.Err()
 	default:
 	}
 	return s.stdout.Read(dst)
 }
 
 func (s *StreamingSource) Close() error {
-	if s.stdout != nil {
-		s.stdout.Close()
+	// Cancel context first to stop all processes
+	s.cancel()
+
+	// Close stdout
+	s.stdout.Close()
+
+	// Wait for processes
+	if s.ffmpeg != nil {
+		s.ffmpeg.Wait()
 	}
-	if s.cmd != nil && s.cmd.Process != nil {
-		s.cmd.Process.Kill()
-		s.cmd.Wait()
+	if s.ytDl != nil {
+		s.ytDl.Wait()
 	}
 	return nil
 }
