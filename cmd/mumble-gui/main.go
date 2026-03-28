@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -97,13 +96,10 @@ var (
 )
 
 type audioPlayer struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
-	url        string
-	volume     float64
-	playing    bool
-	source     io.Closer
-	sourceType string // "url", "file"
+	ctx     context.Context
+	cancel  context.CancelFunc
+	url     string
+	playing bool
 }
 
 func (p *audioPlayer) stop() {
@@ -222,47 +218,26 @@ func handlePlay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-
-	// Create streaming source (handles yt-dlp + ffmpeg pipeline)
-	var src interface {
-		ReadPCM(ctx context.Context, dst []byte) (int, error)
-		Close() error
-	}
-	var err error
-
-	if req.URL != "" && !isDirectAudioURL(req.URL) {
-		// Use streaming source for web URLs (SoundCloud, YouTube, etc.)
-		src, err = sdk.NewStreamingSource(ctx, req.URL)
-	} else {
-		// Use ffmpeg source for direct audio files
-		src, err = sdk.NewFFmpegSource(req.URL)
-	}
-	if err != nil {
-		cancel()
-		mu.Unlock()
-		writeJSON(w, map[string]string{"error": fmt.Sprintf("create source: %v", err)})
-		return
-	}
-
+	playerCtx, cancel := context.WithCancel(context.Background())
 	player = &audioPlayer{
-		ctx:        ctx,
+		ctx:        playerCtx,
 		cancel:     cancel,
 		url:        req.URL,
-		volume:     req.Volume,
 		playing:    true,
-		source:     src,
-		sourceType: "url",
 	}
 	c := client
 	mu.Unlock()
 
-	// Stream in background
+	// Stream using SDK's PlayFile or PlayRemote (proven to work)
 	go func() {
-		// Apply volume scaling if needed (simplified - just pass through)
-		err := c.StreamPCM(ctx, src, 960*2)
-		if err != nil && ctx.Err() == nil {
-			log.Printf("stream error: %v", err)
+		var err error
+		if isDirectAudioURL(req.URL) {
+			err = c.PlayFile(playerCtx, req.URL)
+		} else {
+			err = c.PlayRemote(playerCtx, req.URL)
+		}
+		if err != nil && playerCtx.Err() == nil {
+			log.Printf("play error: %v", err)
 		}
 		mu.Lock()
 		if player != nil {
