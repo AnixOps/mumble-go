@@ -10,25 +10,21 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
             min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
             color: #fff;
         }
         .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 { text-align: center; margin: 20px 0; font-size: 28px; font-weight: 600; }
+        .card {
             background: rgba(255,255,255,0.1);
             backdrop-filter: blur(10px);
             border-radius: 16px;
-            padding: 40px;
-            width: 100%;
-            max-width: 480px;
+            padding: 24px;
+            margin-bottom: 16px;
             box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-        }
-        h1 {
-            text-align: center;
-            margin-bottom: 30px;
-            font-size: 28px;
-            font-weight: 600;
         }
         .status {
             text-align: center;
@@ -40,18 +36,12 @@
         .status.disconnected { background: rgba(255,100,100,0.2); color: #ff6b6b; }
         .status.connecting { background: rgba(255,200,100,0.2); color: #ffc864; }
         .status.connected { background: rgba(100,255,150,0.2); color: #6bff9b; }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 500;
-            color: #ccc;
-        }
-        input {
+        .status.playing { background: rgba(100,150,255,0.2); color: #6b9bff; }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; margin-bottom: 6px; font-weight: 500; color: #ccc; font-size: 14px; }
+        input, select {
             width: 100%;
-            padding: 12px 16px;
+            padding: 10px 14px;
             border: 2px solid rgba(255,255,255,0.1);
             border-radius: 8px;
             background: rgba(255,255,255,0.05);
@@ -59,90 +49,112 @@
             font-size: 16px;
             transition: border-color 0.2s;
         }
-        input:focus {
-            outline: none;
-            border-color: #4a9eff;
-        }
+        input:focus { outline: none; border-color: #4a9eff; }
         input::placeholder { color: #666; }
         input[type="checkbox"] { width: auto; margin-right: 8px; }
-        .checkbox-label { display: flex; align-items: center; color: #ccc; cursor: pointer; }
+        .checkbox-label { display: flex; align-items: center; color: #ccc; cursor: pointer; font-size: 14px; }
         .btn {
-            width: 100%;
-            padding: 14px;
+            padding: 12px 20px;
             border: none;
             border-radius: 8px;
-            font-size: 16px;
+            font-size: 15px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
         }
-        .btn-primary {
-            background: #4a9eff;
-            color: #fff;
-        }
-        .btn-primary:hover { background: #3a8eef; transform: translateY(-1px); }
-        .btn-primary:disabled { background: #666; cursor: not-allowed; transform: none; }
-        .btn-danger {
-            background: #ff6b6b;
-            color: #fff;
-            margin-top: 10px;
-        }
+        .btn-primary { background: #4a9eff; color: #fff; }
+        .btn-primary:hover { background: #3a8eef; }
+        .btn-primary:disabled { background: #666; cursor: not-allowed; }
+        .btn-danger { background: #ff6b6b; color: #fff; }
         .btn-danger:hover { background: #ff5252; }
-        .info {
-            margin-top: 20px;
-            padding: 16px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 8px;
-            font-size: 14px;
-        }
-        .info-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 4px 0;
-        }
+        .btn-success { background: #6bff9b; color: #1a1a2e; }
+        .btn-success:hover { background: #5bef8b; }
+        .btn-group { display: flex; gap: 10px; }
+        .btn-group .btn { flex: 1; }
+        .error { color: #ff6b6b; text-align: center; margin-top: 10px; font-size: 14px; }
+        .info { margin-top: 16px; padding: 14px; background: rgba(255,255,255,0.05); border-radius: 8px; font-size: 14px; }
+        .info-row { display: flex; justify-content: space-between; padding: 4px 0; }
         .info-label { color: #888; }
-        .error {
-            color: #ff6b6b;
+        .hidden { display: none; }
+        .player-card { border: 2px solid rgba(255,255,255,0.1); }
+        .player-card.playing { border-color: #4a9eff; }
+        .now-playing {
             text-align: center;
-            margin-top: 10px;
+            padding: 10px;
+            background: rgba(74,158,255,0.1);
+            border-radius: 8px;
+            margin-bottom: 12px;
             font-size: 14px;
+            word-break: break-all;
         }
+        .volume-control { display: flex; align-items: center; gap: 10px; }
+        .volume-control input { flex: 1; }
+        .volume-value { min-width: 40px; text-align: right; color: #888; font-size: 14px; }
+        .examples { font-size: 12px; color: #666; margin-top: 4px; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Mumble-Go</h1>
-        <div id="status" class="status disconnected">Disconnected</div>
 
-        <form id="connectForm">
-            <div class="form-group">
-                <label for="address">Server (host:port)</label>
-                <input type="text" id="address" placeholder="mumble.example.com:64738" required>
-            </div>
-            <div class="form-group">
-                <label for="username">Username</label>
-                <input type="text" id="username" placeholder="Bot" required>
-            </div>
-            <div class="form-group">
-                <label for="password">Password</label>
-                <input type="password" id="password" placeholder="Optional">
-            </div>
-            <div class="form-group">
-                <label for="channel">Channel</label>
-                <input type="text" id="channel" placeholder="Root (leave empty)">
-            </div>
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="insecure"> Skip TLS Verification (for self-signed certs)
-                </label>
-            </div>
-            <button type="submit" id="connectBtn" class="btn btn-primary">Connect</button>
-            <div id="error" class="error"></div>
-        </form>
+        <!-- Connection Card -->
+        <div class="card">
+            <div id="status" class="status disconnected">Disconnected</div>
 
-        <button id="disconnectBtn" class="btn btn-danger" style="display:none;">Disconnect</button>
+            <form id="connectForm">
+                <div class="form-group">
+                    <label for="address">Server (host:port)</label>
+                    <input type="text" id="address" placeholder="mumble.example.com:64738" required>
+                </div>
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" placeholder="Bot" required>
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" placeholder="Optional">
+                </div>
+                <div class="form-group">
+                    <label for="channel">Channel</label>
+                    <input type="text" id="channel" placeholder="Root (leave empty)">
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="insecure"> Skip TLS Verification (self-signed certs)
+                    </label>
+                </div>
+                <button type="submit" id="connectBtn" class="btn btn-primary" style="width:100%">Connect</button>
+                <div id="connectError" class="error"></div>
+            </form>
 
-        <div id="info" class="info" style="display:none;">
+            <button id="disconnectBtn" class="btn btn-danger" style="width:100%; display:none;">Disconnect</button>
+        </div>
+
+        <!-- Player Card -->
+        <div class="card player-card" id="playerCard">
+            <div id="nowPlaying" class="now-playing hidden">Not playing</div>
+
+            <form id="playForm">
+                <div class="form-group">
+                    <label for="playUrl">Audio URL or Search</label>
+                    <input type="text" id="playUrl" placeholder="SoundCloud/YouTube URL, direct audio link, or search term">
+                    <div class="examples">Supported: SoundCloud, YouTube, direct MP3/WAV/OGG URLs</div>
+                </div>
+                <div class="form-group volume-control">
+                    <label for="volume">Volume</label>
+                    <input type="range" id="volume" min="0" max="200" value="100">
+                    <span class="volume-value" id="volumeValue">100%</span>
+                </div>
+                <div class="btn-group">
+                    <button type="submit" id="playBtn" class="btn btn-success">Play</button>
+                    <button type="button" id="stopBtn" class="btn btn-danger">Stop</button>
+                </div>
+                <div id="playError" class="error"></div>
+            </form>
+        </div>
+
+        <!-- Info Card -->
+        <div class="card" id="infoCard" style="display:none;">
             <div class="info-row"><span class="info-label">Session</span><span id="session">-</span></div>
             <div class="info-row"><span class="info-label">Channel</span><span id="channelDisplay">-</span></div>
         </div>
@@ -150,20 +162,35 @@
 
     <script>
         const status = document.getElementById('status');
-        const form = document.getElementById('connectForm');
+        const connectForm = document.getElementById('connectForm');
+        const playForm = document.getElementById('playForm');
         const connectBtn = document.getElementById('connectBtn');
         const disconnectBtn = document.getElementById('disconnectBtn');
-        const error = document.getElementById('error');
-        const info = document.getElementById('info');
+        const playBtn = document.getElementById('playBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const connectError = document.getElementById('connectError');
+        const playError = document.getElementById('playError');
+        const infoCard = document.getElementById('infoCard');
+        const playerCard = document.getElementById('playerCard');
+        const nowPlaying = document.getElementById('nowPlaying');
+        const volumeSlider = document.getElementById('volume');
+        const volumeValue = document.getElementById('volumeValue');
 
         let isConnected = false;
+        let isPlaying = false;
 
         function setStatus(s, text) {
             status.className = 'status ' + s;
             status.textContent = text;
         }
 
-        form.addEventListener('submit', async (e) => {
+        // Volume slider
+        volumeSlider.addEventListener('input', () => {
+            volumeValue.textContent = volumeSlider.value + '%';
+        });
+
+        // Connect
+        connectForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             if (isConnected) return;
 
@@ -177,7 +204,7 @@
 
             setStatus('connecting', 'Connecting...');
             connectBtn.disabled = true;
-            error.textContent = '';
+            connectError.textContent = '';
 
             try {
                 const res = await fetch('/api/connect', {
@@ -190,18 +217,18 @@
                 if (result.success) {
                     isConnected = true;
                     setStatus('connected', 'Connected');
-                    form.style.display = 'none';
+                    connectForm.style.display = 'none';
                     disconnectBtn.style.display = 'block';
-                    info.style.display = 'block';
+                    infoCard.style.display = 'block';
                     document.getElementById('session').textContent = result.session;
                     document.getElementById('channelDisplay').textContent = result.channel || 'Root';
                 } else {
                     setStatus('disconnected', 'Disconnected');
-                    error.textContent = result.error || 'Connection failed';
+                    connectError.textContent = result.error || 'Connection failed';
                 }
             } catch (e) {
                 setStatus('disconnected', 'Disconnected');
-                error.textContent = e.message;
+                connectError.textContent = e.message;
             }
             connectBtn.disabled = false;
         });
@@ -209,14 +236,98 @@
         disconnectBtn.addEventListener('click', async () => {
             try {
                 await fetch('/api/disconnect', {method: 'POST'});
+                await fetch('/api/stop', {method: 'POST'});
             } catch (e) {}
             isConnected = false;
+            isPlaying = false;
             setStatus('disconnected', 'Disconnected');
-            form.style.display = 'block';
+            connectForm.style.display = 'block';
             disconnectBtn.style.display = 'none';
-            info.style.display = 'none';
+            infoCard.style.display = 'none';
+            playerCard.classList.remove('playing');
+            nowPlaying.classList.add('hidden');
+            nowPlaying.textContent = 'Not playing';
             connectBtn.disabled = false;
         });
+
+        // Play
+        playForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!isConnected) {
+                playError.textContent = 'Please connect first';
+                return;
+            }
+            if (isPlaying) {
+                playError.textContent = 'Already playing';
+                return;
+            }
+
+            const url = document.getElementById('playUrl').value.trim();
+            if (!url) {
+                playError.textContent = 'Please enter a URL';
+                return;
+            }
+
+            const volume = parseInt(volumeSlider.value) / 100;
+
+            playError.textContent = '';
+            playBtn.disabled = true;
+            playBtn.textContent = 'Loading...';
+
+            try {
+                const res = await fetch('/api/play', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ url, volume })
+                });
+                const result = await res.json();
+
+                if (result.error) {
+                    playError.textContent = result.error;
+                } else if (result.playing) {
+                    isPlaying = true;
+                    playBtn.textContent = 'Playing...';
+                    playBtn.disabled = false;
+                    playerCard.classList.add('playing');
+                    nowPlaying.classList.remove('hidden');
+                    nowPlaying.textContent = '🎵 ' + url;
+                }
+            } catch (e) {
+                playError.textContent = e.message;
+            }
+            playBtn.disabled = false;
+            if (!isPlaying) playBtn.textContent = 'Play';
+        });
+
+        stopBtn.addEventListener('click', async () => {
+            try {
+                await fetch('/api/stop', {method: 'POST'});
+            } catch (e) {}
+            isPlaying = false;
+            playBtn.textContent = 'Play';
+            playerCard.classList.remove('playing');
+            nowPlaying.classList.add('hidden');
+            nowPlaying.textContent = 'Not playing';
+        });
+
+        // Poll status
+        setInterval(async () => {
+            try {
+                const res = await fetch('/api/status');
+                const s = await res.json();
+                if (!s.connected && isConnected) {
+                    // Server disconnected
+                    disconnectBtn.click();
+                }
+                if (!s.playing && isPlaying) {
+                    isPlaying = false;
+                    playBtn.textContent = 'Play';
+                    playerCard.classList.remove('playing');
+                    nowPlaying.classList.add('hidden');
+                    nowPlaying.textContent = 'Not playing';
+                }
+            } catch (e) {}
+        }, 2000);
     </script>
 </body>
 </html>

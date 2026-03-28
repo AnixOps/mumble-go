@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os/exec"
 	"runtime"
+	"sync"
 	"time"
 
 	"mumble-go/sdk"
@@ -40,6 +42,9 @@ func startWebServer() int {
 		http.HandleFunc("/", serveIndex)
 		http.HandleFunc("/api/connect", handleConnect)
 		http.HandleFunc("/api/disconnect", handleDisconnect)
+		http.HandleFunc("/api/play", handlePlay)
+		http.HandleFunc("/api/stop", handleStop)
+		http.HandleFunc("/api/status", handleStatus)
 		http.Serve(listener, nil)
 	}()
 
@@ -85,7 +90,39 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-var client *sdk.Client
+var (
+	client *sdk.Client
+	player *audioPlayer
+	mu     sync.Mutex
+)
+
+type audioPlayer struct {
+	ctx        context.Context
+	cancel     context.CancelFunc
+	url        string
+	volume     float64
+	playing    bool
+	source     io.Closer
+	sourceType string // "url", "file"
+}
+
+func (p *audioPlayer) stop() {
+	if p != nil && p.cancel != nil {
+		p.cancel()
+		p.playing = false
+	}
+}
+
+type playRequest struct {
+	URL     string  `json:"url"`
+	Volume  float64 `json:"volume"`
+}
+
+type statusResponse struct {
+	Connected bool   `json:"connected"`
+	Playing   bool   `json:"playing"`
+	URL       string `json:"url,omitempty"`
+}
 
 func handleConnect(w http.ResponseWriter, r *http.Request) {
 	var req connectRequest
@@ -94,8 +131,13 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mu.Lock()
 	if client != nil {
 		client.Close()
+	}
+	if player != nil {
+		player.stop()
+		player = nil
 	}
 
 	c := sdk.New(sdk.Config{
@@ -104,6 +146,7 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		Password:    req.Password,
 		InsecureTLS: req.InsecureTLS,
 	})
+	mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -120,7 +163,10 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	mu.Lock()
 	client = c
+	mu.Unlock()
+
 	writeJSON(w, connectResponse{
 		Success:   true,
 		Session:   c.Session(),
@@ -130,11 +176,129 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleDisconnect(w http.ResponseWriter, r *http.Request) {
+	mu.Lock()
+	if player != nil {
+		player.stop()
+		player = nil
+	}
 	if client != nil {
 		client.Close()
 		client = nil
 	}
+	mu.Unlock()
 	writeJSON(w, connectResponse{Success: true})
+}
+
+func handlePlay(w http.ResponseWriter, r *http.Request) {
+	var req playRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+
+	mu.Lock()
+	if client == nil {
+		mu.Unlock()
+		writeJSON(w, map[string]string{"error": "not connected"})
+		return
+	}
+	if player != nil {
+		player.stop()
+	}
+
+	// Resolve URL if needed (SoundCloud, YouTube, etc.)
+	playURL := req.URL
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if req.URL != "" && !isDirectAudioURL(req.URL) {
+		resolved, err := sdk.ResolvePlayableURL(ctx, req.URL)
+		if err != nil {
+			cancel()
+			mu.Unlock()
+			writeJSON(w, map[string]string{"error": fmt.Sprintf("resolve URL: %v", err)})
+			return
+		}
+		playURL = resolved
+	}
+
+	// Create ffmpeg source
+	src, err := sdk.NewFFmpegSource(playURL)
+	if err != nil {
+		cancel()
+		mu.Unlock()
+		writeJSON(w, map[string]string{"error": fmt.Sprintf("create source: %v", err)})
+		return
+	}
+
+	player = &audioPlayer{
+		ctx:        ctx,
+		cancel:     cancel,
+		url:        req.URL,
+		volume:     req.Volume,
+		playing:    true,
+		source:     src,
+		sourceType: "url",
+	}
+	c := client
+	mu.Unlock()
+
+	// Stream in background
+	go func() {
+		// Apply volume scaling if needed (simplified - just pass through)
+		err := c.StreamPCM(ctx, src, 960*2)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("stream error: %v", err)
+		}
+		mu.Lock()
+		if player != nil {
+			player.playing = false
+		}
+		mu.Unlock()
+	}()
+
+	writeJSON(w, map[string]bool{"playing": true})
+}
+
+func handleStop(w http.ResponseWriter, r *http.Request) {
+	mu.Lock()
+	if player != nil {
+		player.stop()
+		player = nil
+	}
+	mu.Unlock()
+	writeJSON(w, map[string]bool{"playing": false})
+}
+
+func handleStatus(w http.ResponseWriter, r *http.Request) {
+	mu.Lock()
+	defer mu.Unlock()
+	var playing bool
+	var url string
+	if player != nil {
+		playing = player.playing
+		url = player.url
+	}
+	writeJSON(w, statusResponse{
+		Connected: client != nil,
+		Playing:   playing,
+		URL:       url,
+	})
+}
+
+func isDirectAudioURL(url string) bool {
+	return len(url) > 0 && (hasExtension(url, ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m3u8") || isHTTPStream(url))
+}
+
+func hasExtension(url string, exts ...string) bool {
+	for _, ext := range exts {
+		if len(url) > len(ext) && url[len(url)-len(ext):] == ext {
+			return true
+		}
+	}
+	return false
+}
+
+func isHTTPStream(url string) bool {
+	return len(url) > 7 && (url[:7] == "http://" || url[:8] == "https://")
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
