@@ -220,22 +220,22 @@ func handlePlay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Resolve URL if needed (SoundCloud, YouTube, etc.)
-	playURL := req.URL
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	if req.URL != "" && !isDirectAudioURL(req.URL) {
-		resolved, err := sdk.ResolvePlayableURL(ctx, req.URL)
-		if err != nil {
-			cancel()
-			mu.Unlock()
-			writeJSON(w, map[string]string{"error": fmt.Sprintf("resolve URL: %v", err)})
-			return
-		}
-		playURL = resolved
-	}
 
-	// Create ffmpeg source
-	src, err := sdk.NewFFmpegSource(playURL)
+	// Create streaming source (handles yt-dlp + ffmpeg pipeline)
+	var src interface {
+		ReadPCM(ctx context.Context, dst []byte) (int, error)
+		Close() error
+	}
+	var err error
+
+	if req.URL != "" && !isDirectAudioURL(req.URL) {
+		// Use streaming source for web URLs (SoundCloud, YouTube, etc.)
+		src, err = sdk.NewStreamingSource(ctx, req.URL)
+	} else {
+		// Use ffmpeg source for direct audio files
+		src, err = sdk.NewFFmpegSource(req.URL)
+	}
 	if err != nil {
 		cancel()
 		mu.Unlock()
