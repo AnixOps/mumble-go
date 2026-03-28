@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mumble-Go GUI</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+        }
+        .container {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: 40px;
+            width: 100%;
+            max-width: 480px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 28px;
+            font-weight: 600;
+        }
+        .status {
+            text-align: center;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+        .status.disconnected { background: rgba(255,100,100,0.2); color: #ff6b6b; }
+        .status.connecting { background: rgba(255,200,100,0.2); color: #ffc864; }
+        .status.connected { background: rgba(100,255,150,0.2); color: #6bff9b; }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #ccc;
+        }
+        input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            background: rgba(255,255,255,0.05);
+            color: #fff;
+            font-size: 16px;
+            transition: border-color 0.2s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #4a9eff;
+        }
+        input::placeholder { color: #666; }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: #4a9eff;
+            color: #fff;
+        }
+        .btn-primary:hover { background: #3a8eef; transform: translateY(-1px); }
+        .btn-primary:disabled { background: #666; cursor: not-allowed; transform: none; }
+        .btn-danger {
+            background: #ff6b6b;
+            color: #fff;
+            margin-top: 10px;
+        }
+        .btn-danger:hover { background: #ff5252; }
+        .info {
+            margin-top: 20px;
+            padding: 16px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+        }
+        .info-label { color: #888; }
+        .error {
+            color: #ff6b6b;
+            text-align: center;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Mumble-Go</h1>
+        <div id="status" class="status disconnected">Disconnected</div>
+
+        <form id="connectForm">
+            <div class="form-group">
+                <label for="address">Server (host:port)</label>
+                <input type="text" id="address" placeholder="mumble.example.com:64738" required>
+            </div>
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" placeholder="Bot" required>
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" placeholder="Optional">
+            </div>
+            <div class="form-group">
+                <label for="channel">Channel</label>
+                <input type="text" id="channel" placeholder="Root (leave empty)">
+            </div>
+            <button type="submit" id="connectBtn" class="btn btn-primary">Connect</button>
+            <div id="error" class="error"></div>
+        </form>
+
+        <button id="disconnectBtn" class="btn btn-danger" style="display:none;">Disconnect</button>
+
+        <div id="info" class="info" style="display:none;">
+            <div class="info-row"><span class="info-label">Session</span><span id="session">-</span></div>
+            <div class="info-row"><span class="info-label">Channel</span><span id="channelDisplay">-</span></div>
+        </div>
+    </div>
+
+    <script>
+        const status = document.getElementById('status');
+        const form = document.getElementById('connectForm');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const error = document.getElementById('error');
+        const info = document.getElementById('info');
+
+        let isConnected = false;
+
+        function setStatus(s, text) {
+            status.className = 'status ' + s;
+            status.textContent = text;
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (isConnected) return;
+
+            const data = {
+                address: document.getElementById('address').value,
+                username: document.getElementById('username').value,
+                password: document.getElementById('password').value,
+                channel: document.getElementById('channel').value,
+                insecure_tls: false
+            };
+
+            setStatus('connecting', 'Connecting...');
+            connectBtn.disabled = true;
+            error.textContent = '';
+
+            try {
+                const res = await fetch('/api/connect', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                const result = await res.json();
+
+                if (result.success) {
+                    isConnected = true;
+                    setStatus('connected', 'Connected');
+                    form.style.display = 'none';
+                    disconnectBtn.style.display = 'block';
+                    info.style.display = 'block';
+                    document.getElementById('session').textContent = result.session;
+                    document.getElementById('channelDisplay').textContent = result.channel || 'Root';
+                } else {
+                    setStatus('disconnected', 'Disconnected');
+                    error.textContent = result.error || 'Connection failed';
+                }
+            } catch (e) {
+                setStatus('disconnected', 'Disconnected');
+                error.textContent = e.message;
+            }
+            connectBtn.disabled = false;
+        });
+
+        disconnectBtn.addEventListener('click', async () => {
+            try {
+                await fetch('/api/disconnect', {method: 'POST'});
+            } catch (e) {}
+            isConnected = false;
+            setStatus('disconnected', 'Disconnected');
+            form.style.display = 'block';
+            disconnectBtn.style.display = 'none';
+            info.style.display = 'none';
+            connectBtn.disabled = false;
+        });
+    </script>
+</body>
+</html>
