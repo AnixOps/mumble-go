@@ -7,6 +7,7 @@ import (
 
 	"mumble-go/client"
 	"mumble-go/identity"
+	"mumble-go/state"
 )
 
 type Config struct {
@@ -113,6 +114,31 @@ func (c *Client) SendPCMUDP(pcm []byte) error {
 	return c.inner.SendAudioUDP(pcm)
 }
 
+// SendAudio is an alias for SendPCM for API compatibility.
+func (c *Client) SendAudio(pcm []byte) error {
+	return c.inner.SendAudio(pcm)
+}
+
+// SendAudioUDP is an alias for SendPCMUDP for API compatibility.
+func (c *Client) SendAudioUDP(pcm []byte) error {
+	return c.inner.SendAudioUDP(pcm)
+}
+
+// Audio returns the underlying audio handler for advanced use.
+func (c *Client) Audio() *client.Audio {
+	return c.inner.Audio()
+}
+
+// State returns the underlying state store.
+func (c *Client) State() *state.Store {
+	return c.inner.State()
+}
+
+// Events returns the underlying event handler.
+func (c *Client) Events() *client.EventHandler {
+	return c.inner.Events()
+}
+
 func (c *Client) Session() uint32 {
 	return c.inner.State().SelfSession()
 }
@@ -151,6 +177,23 @@ func (c *Client) IdentityState() string {
 		return "connected"
 	}
 	return fmt.Sprintf("session=%d user_id=%d channel=%d cert_hash=%s", user.Session, user.UserID, user.ChannelID, user.CertificateHash)
+}
+
+func (c *Client) PlayFile(ctx context.Context, path string) error {
+	src, err := NewFFmpegSource(path)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	return c.StreamPCM(ctx, src, 960*2)
+}
+
+func (c *Client) PlayRemote(ctx context.Context, input string) error {
+	resolved, err := ResolvePlayableURL(ctx, input)
+	if err != nil {
+		return err
+	}
+	return c.PlayFile(ctx, resolved)
 }
 
 func (c *Client) Close() error {
