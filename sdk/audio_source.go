@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -26,7 +27,9 @@ func (c *Client) StreamPCM(ctx context.Context, src AudioSource, frameBytes int)
 		if len(pending) == 0 {
 			return nil
 		}
+		fmt.Printf("[DEBUG] StreamPCM: flushing %d bytes\n", len(pending))
 		if err := c.SendPCM(pending); err != nil {
+			fmt.Printf("[DEBUG] StreamPCM: SendPCM error: %v\n", err)
 			return err
 		}
 		pending = pending[:0]
@@ -35,6 +38,7 @@ func (c *Client) StreamPCM(ctx context.Context, src AudioSource, frameBytes int)
 	for {
 		n, err := src.ReadPCM(ctx, buf)
 		if n > 0 {
+			fmt.Printf("[DEBUG] StreamPCM: read %d bytes\n", n)
 			pending = append(pending, buf[:n]...)
 			if len(pending) >= cap(pending) {
 				if sendErr := flush(); sendErr != nil {
@@ -44,8 +48,10 @@ func (c *Client) StreamPCM(ctx context.Context, src AudioSource, frameBytes int)
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				fmt.Printf("[DEBUG] StreamPCM: EOF, flushing\n")
 				return flush()
 			}
+			fmt.Printf("[DEBUG] StreamPCM: read error: %v\n", err)
 			return err
 		}
 	}
