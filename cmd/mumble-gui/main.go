@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -37,11 +40,19 @@ func startWebServer() int {
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 
+	// Create temp dir for uploads
+	tmpDir, err := os.MkdirTemp("", "mumble-gui-*")
+	if err == nil {
+		os.Chdir(tmpDir) // Change to temp dir so files are saved there
+	}
+
 	go func() {
 		http.HandleFunc("/", serveIndex)
 		http.HandleFunc("/api/connect", handleConnect)
 		http.HandleFunc("/api/disconnect", handleDisconnect)
 		http.HandleFunc("/api/play", handlePlay)
+		http.HandleFunc("/api/playfile", handlePlayFile)
+		http.HandleFunc("/api/upload", handleUpload)
 		http.HandleFunc("/api/stop", handleStop)
 		http.HandleFunc("/api/status", handleStatus)
 		http.Serve(listener, nil)
@@ -297,6 +308,82 @@ func hasExtension(url string, exts ...string) bool {
 		}
 	}
 	return false
+}
+
+func handleUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		writeJSON(w, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, map[string]string{"error": fmt.Sprintf("get file: %v", err)})
+		return
+	}
+	defer file.Close()
+
+	// Create temp file
+	tmpFile, err := os.CreateTemp("", "audio-*"+filepath.Ext(header.Filename))
+	if err != nil {
+		writeJSON(w, map[string]string{"error": fmt.Sprintf("create temp: %v", err)})
+		return
+	}
+	defer tmpFile.Close()
+
+	_, err = io.Copy(tmpFile, file)
+	if err != nil {
+		writeJSON(w, map[string]string{"error": fmt.Sprintf("save file: %v", err)})
+		return
+	}
+
+	writeJSON(w, map[string]string{"path": tmpFile.Name()})
+}
+
+type playFileRequest struct {
+	Path string `json:"path"`
+}
+
+func handlePlayFile(w http.ResponseWriter, r *http.Request) {
+	var req playFileRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+
+	mu.Lock()
+	if client == nil {
+		mu.Unlock()
+		writeJSON(w, map[string]string{"error": "not connected"})
+		return
+	}
+	if player != nil {
+		player.stop()
+	}
+
+	playerCtx, cancel := context.WithCancel(context.Background())
+	player = &audioPlayer{
+		ctx:     playerCtx,
+		cancel:  cancel,
+		url:     req.Path,
+		playing: true,
+	}
+	c := client
+	mu.Unlock()
+
+	go func() {
+		err := c.PlayFile(playerCtx, req.Path)
+		if err != nil && playerCtx.Err() == nil {
+			log.Printf("play file error: %v", err)
+		}
+		mu.Lock()
+		if player != nil {
+			player.playing = false
+		}
+		mu.Unlock()
+	}()
+
+	writeJSON(w, map[string]bool{"playing": true})
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

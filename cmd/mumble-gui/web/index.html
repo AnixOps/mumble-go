@@ -136,9 +136,13 @@
 
             <form id="playForm">
                 <div class="form-group">
-                    <label for="playUrl">Audio URL or Search</label>
-                    <input type="text" id="playUrl" placeholder="SoundCloud/YouTube URL, direct audio link, or search term">
+                    <label for="playUrl">Audio URL</label>
+                    <input type="text" id="playUrl" placeholder="SoundCloud/YouTube URL, or direct audio link">
                     <div class="examples">Supported: SoundCloud, YouTube, direct MP3/WAV/OGG URLs</div>
+                </div>
+                <div class="form-group">
+                    <label for="playFile">Or upload local file</label>
+                    <input type="file" id="playFile" accept="audio/*">
                 </div>
                 <div class="form-group volume-control">
                     <label for="volume">Volume</label>
@@ -262,9 +266,54 @@
                 return;
             }
 
+            const fileInput = document.getElementById('playFile');
+            if (fileInput.files.length > 0) {
+                // Upload and play local file
+                const file = fileInput.files[0];
+                playError.textContent = 'Uploading...';
+                playBtn.disabled = true;
+
+                const formData = new FormData();
+                formData.append('file', file);
+
+                try {
+                    const res = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const result = await res.json();
+                    if (result.error) {
+                        playError.textContent = result.error;
+                    } else if (result.path) {
+                        // Now play the uploaded file
+                        playError.textContent = '';
+                        const playRes = await fetch('/api/playfile', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ path: result.path })
+                        });
+                        const playResult = await playRes.json();
+                        if (playResult.error) {
+                            playError.textContent = playResult.error;
+                        } else if (playResult.playing) {
+                            isPlaying = true;
+                            playBtn.textContent = 'Playing...';
+                            playerCard.classList.add('playing');
+                            nowPlaying.classList.remove('hidden');
+                            nowPlaying.textContent = '🎵 ' + file.name;
+                        }
+                    }
+                } catch (e) {
+                    playError.textContent = e.message;
+                }
+                playBtn.disabled = false;
+                fileInput.value = '';
+                return;
+            }
+
             const url = document.getElementById('playUrl').value.trim();
             if (!url) {
-                playError.textContent = 'Please enter a URL';
+                playError.textContent = 'Please enter a URL or upload a file';
                 return;
             }
 
