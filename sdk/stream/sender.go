@@ -335,6 +335,14 @@ func (s *StreamSender) sendFrame(silence []byte, frameBytes int, seq uint64) uin
 				ev.OnError(err)
 			}
 		}
+		// Try to get frame from jitter buffer if available
+		if s.jitter != nil {
+			jitterPcm, ok := s.jitter.Pop(time.Now())
+			if ok && len(jitterPcm) == frameBytes {
+				s.doSendAudio(jitterPcm)
+				return seq + 1
+			}
+		}
 		// Send silence to keep stream alive
 		s.doSendAudio(silence)
 		return seq + 1
@@ -343,9 +351,31 @@ func (s *StreamSender) sendFrame(silence []byte, frameBytes int, seq uint64) uin
 	// VAD check
 	s.mu.Lock()
 	vad := s.vad
+	skipSilent := s.config.SkipSilentFrames
 	s.mu.Unlock()
+	isSpeaking := true
 	if vad != nil {
-		vad.Process(pcm) // triggers callback if state changed
+		isSpeaking = vad.Process(pcm) // triggers callback if state changed
+	}
+
+	// Skip sending if VAD is enabled, SkipSilentFrames is true, and not speaking
+	if !isSpeaking && skipSilent {
+		// Don't send anything to save bandwidth - stream will timeout if no audio received
+		return seq
+	}
+
+	// Push to jitter buffer for smoothing
+	// Deadline = now + buffer depth * frame duration (target playback time)
+	if s.jitter != nil {
+		deadline := time.Now().Add(time.Duration(s.config.BufferDepth) * time.Duration(audio.FrameDurationMs) * time.Millisecond)
+		s.jitter.Push(pcm, deadline)
+		// Pop the frame - jitter buffer handles timing
+		jitterPcm, ok := s.jitter.Pop(time.Now())
+		if ok && len(jitterPcm) == frameBytes {
+			s.doSendAudio(jitterPcm)
+			return seq + 1
+		}
+		// If jitter buffer not ready, fall through to direct send
 	}
 
 	s.doSendAudio(pcm)

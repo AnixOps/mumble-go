@@ -15,8 +15,9 @@ func DefaultStreamConfig() *StreamConfig {
 		BufferDepth: 3,
 
 		// VAD: energy-based, enabled by default for bandwidth saving
-		VADEnabled:      true,
+		VADEnabled:       true,
 		EnergyThreshold: 500,
+		SkipSilentFrames: false, // off by default
 
 		// Reconnection: enabled by default
 		Reconnect:            true,
@@ -38,8 +39,9 @@ type StreamConfig struct {
 	BufferDepth int // number of frames to buffer, default 3 (60ms)
 
 	// Voice activity detection
-	VADEnabled     bool
-	EnergyThreshold float64 // RMS energy threshold for speech, default 500
+	VADEnabled      bool
+	EnergyThreshold float64  // RMS energy threshold for speech, default 500
+	SkipSilentFrames bool    // skip sending when VAD detects silence, default false
 
 	// Reconnection
 	Reconnect           bool
