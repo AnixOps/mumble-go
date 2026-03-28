@@ -202,14 +202,23 @@ func (c *Client) PlayRemote(ctx context.Context, input string) error {
 }
 
 func (c *Client) playHLSStream(ctx context.Context, m3u8URL string) error {
-	// Use yt-dlp to pipe the stream through ffmpeg
+	fmt.Printf("[DEBUG] playHLSStream: %s\n", m3u8URL)
+
+	// First, test what yt-dlp returns
+	testCmd := exec.Command("sh", "-c", resolveTool("yt-dlp")+" --no-playlist -g '"+m3u8URL+"' 2>&1")
+	out, err := testCmd.Output()
+	fmt.Printf("[DEBUG] yt-dlp -g output: %s, err: %v\n", string(out), err)
+
+	// Use yt-dlp to stream directly with ffmpeg as output
 	cmd := exec.CommandContext(ctx, resolveTool("yt-dlp"),
 		"--no-playlist",
+		"--no-check-certificates",
+		"-f", "bestaudio[ext=opus]/bestaudio",
 		"-o", "-",
-		"-f", "bestaudio",
 		"--",
 		m3u8URL,
 	)
+	fmt.Printf("[DEBUG] Starting yt-dlp pipe...\n")
 
 	ffmpegCmd := exec.CommandContext(ctx, resolveTool("ffmpeg"),
 		"-nostdin",
