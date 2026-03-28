@@ -14,42 +14,28 @@ type AudioSource interface {
 }
 
 // StreamPCM sends data from an AudioSource until EOF or context cancellation.
-// It groups a few 20ms frames together before flushing to better match real
-// client voice cadence for sustained playback.
+// It sends frames in small chunks (~20ms each) to match Mumble protocol expectations.
 func (c *Client) StreamPCM(ctx context.Context, src AudioSource, frameBytes int) error {
 	if frameBytes <= 0 {
 		return errors.New("sdk: frameBytes must be > 0")
 	}
-	const bundleFrames = 5 // 100ms packets
-	buf := make([]byte, frameBytes)
-	pending := make([]byte, 0, frameBytes*bundleFrames)
-	flush := func() error {
-		if len(pending) == 0 {
-			return nil
-		}
-		fmt.Printf("[DEBUG] StreamPCM: flushing %d bytes\n", len(pending))
-		if err := c.SendPCM(pending); err != nil {
-			fmt.Printf("[DEBUG] StreamPCM: SendPCM error: %v\n", err)
-			return err
-		}
-		pending = pending[:0]
-		return nil
-	}
+
+	buf := make([]byte, frameBytes) // 1920 bytes = 20ms at 48kHz
+
 	for {
 		n, err := src.ReadPCM(ctx, buf)
 		if n > 0 {
-			fmt.Printf("[DEBUG] StreamPCM: read %d bytes\n", n)
-			pending = append(pending, buf[:n]...)
-			if len(pending) >= cap(pending) {
-				if sendErr := flush(); sendErr != nil {
-					return sendErr
-				}
+			fmt.Printf("[DEBUG] StreamPCM: got %d bytes from source\n", n)
+			if err := c.SendPCM(buf[:n]); err != nil {
+				fmt.Printf("[DEBUG] StreamPCM: SendPCM error: %v\n", err)
+				return err
 			}
+			fmt.Printf("[DEBUG] StreamPCM: sent %d bytes\n", n)
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				fmt.Printf("[DEBUG] StreamPCM: EOF, flushing\n")
-				return flush()
+				fmt.Printf("[DEBUG] StreamPCM: EOF\n")
+				return nil
 			}
 			fmt.Printf("[DEBUG] StreamPCM: read error: %v\n", err)
 			return err
