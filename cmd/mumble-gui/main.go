@@ -146,6 +146,8 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		Password:    req.Password,
 		InsecureTLS: req.InsecureTLS,
 	})
+	// Configure audio for streaming
+	_ = c.ConfigureRawAudio()
 	mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
