@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,17 +13,22 @@ import (
 
 // mockSenderClient implements SenderClient for testing.
 type mockSenderClient struct {
+	mu               sync.Mutex
 	sendAudioUDPCalled int
 	sendAudioCalled    int
 }
 
 func (m *mockSenderClient) SendAudio(pcm []byte) error {
+	m.mu.Lock()
 	m.sendAudioCalled++
+	m.mu.Unlock()
 	return nil
 }
 
 func (m *mockSenderClient) SendAudioUDP(pcm []byte) error {
+	m.mu.Lock()
 	m.sendAudioUDPCalled++
+	m.mu.Unlock()
 	return nil
 }
 
@@ -32,20 +38,22 @@ func (m *mockSenderClient) State() *state.Store { return nil }
 
 // mockAudioSource implements AudioSource for testing.
 type mockAudioSource struct {
-	readCount int
-	frames    int
-	pos       int
+	mu   sync.Mutex
+	data []byte
+	pos  int
 }
 
 func (m *mockAudioSource) ReadPCM(ctx context.Context, p []byte) (n int, err error) {
-	m.readCount++
-	if m.pos >= m.frames {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pos >= len(m.data) {
 		return 0, io.EOF
 	}
-	for i := range p {
-		p[i] = byte(i % 256)
+	copy(p, m.data[m.pos:])
+	m.pos += len(p)
+	if m.pos >= len(m.data) {
+		return len(p), io.EOF
 	}
-	m.pos++
 	return len(p), nil
 }
 
@@ -158,15 +166,21 @@ func TestStreamSender_PauseResume(t *testing.T) {
 
 	// Let it run a bit
 	time.Sleep(50 * time.Millisecond)
+	client.mu.Lock()
 	callsAfterStart := client.sendAudioUDPCalled
+	client.mu.Unlock()
 
 	sender.Pause()
 	time.Sleep(30 * time.Millisecond)
+	client.mu.Lock()
 	callsAfterPause := client.sendAudioUDPCalled
+	client.mu.Unlock()
 
 	sender.Resume()
 	time.Sleep(30 * time.Millisecond)
+	client.mu.Lock()
 	callsAfterResume := client.sendAudioUDPCalled
+	client.mu.Unlock()
 
 	// Paused should not have increased calls significantly
 	if callsAfterPause > callsAfterStart+2 {
@@ -181,7 +195,7 @@ func TestStreamSender_SetSource(t *testing.T) {
 
 	sender, _ := NewStreamSender(client, cfg)
 
-	src := &mockAudioSource{frames: 3}
+	src := &mockAudioSource{data: make([]byte, 1920*3)}
 	err := sender.SetSource(src)
 	if err != nil {
 		t.Fatalf("SetSource() error = %v", err)
@@ -193,7 +207,10 @@ func TestStreamSender_SetSource(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	if src.readCount == 0 {
+	src.mu.Lock()
+	pos := src.pos
+	src.mu.Unlock()
+	if pos == 0 {
 		t.Fatal("expected source to be read")
 	}
 }
@@ -204,8 +221,8 @@ func TestStreamSender_AddRemoveSource(t *testing.T) {
 
 	sender, _ := NewStreamSender(client, cfg)
 
-	src1 := &mockAudioSource{frames: 10}
-	src2 := &mockAudioSource{frames: 10}
+	src1 := &mockAudioSource{data: make([]byte, 1920*10)}
+	src2 := &mockAudioSource{data: make([]byte, 1920*10)}
 
 	err := sender.AddSource("src1", src1, 1.0)
 	if err != nil {
@@ -241,7 +258,7 @@ func TestStreamSender_SetSourceGain(t *testing.T) {
 
 	sender, _ := NewStreamSender(client, cfg)
 
-	src := &mockAudioSource{frames: 10}
+	src := &mockAudioSource{data: make([]byte, 1920*10)}
 	_ = sender.AddSource("src", src, 1.0)
 
 	err := sender.SetSourceGain("src", 0.5)

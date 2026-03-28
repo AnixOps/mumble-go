@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -147,30 +148,41 @@ func TestReconnectManager_Handlers(t *testing.T) {
 
 	m := NewReconnectManager(cfg)
 
+	var mu sync.Mutex
 	reconnectingCalled := false
 	reconnectedCalled := false
 
 	m.SetReconnectingHandler(func(attempt int, nextDelay time.Duration) {
+		mu.Lock()
 		reconnectingCalled = true
+		mu.Unlock()
 	})
 
 	m.SetReconnectedHandler(func() {
+		mu.Lock()
 		reconnectedCalled = true
+		mu.Unlock()
 	})
 
 	m.OnDisconnect()
 	// Give timer time to fire - timer fires after InitialDelay
 	time.Sleep(20 * time.Millisecond)
 
+	mu.Lock()
 	if !reconnectingCalled {
+		mu.Unlock()
 		t.Fatal("expected reconnecting handler to be called")
 	}
+	mu.Unlock()
 
 	// Simulate successful reconnection
 	m.OnReconnectSuccess()
+	mu.Lock()
 	if !reconnectedCalled {
+		mu.Unlock()
 		t.Fatal("expected reconnected handler to be called")
 	}
+	mu.Unlock()
 }
 
 func TestReconnectManager_BufferSize(t *testing.T) {
