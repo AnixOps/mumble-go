@@ -206,6 +206,20 @@ func handlePlay(w http.ResponseWriter, r *http.Request) {
 		player.stop()
 	}
 
+	// Ensure tools are available
+	if err := sdk.EnsureTool("ffmpeg"); err != nil {
+		mu.Unlock()
+		writeJSON(w, map[string]string{"error": fmt.Sprintf("ffmpeg: %v", err)})
+		return
+	}
+	if req.URL != "" && !isDirectAudioURL(req.URL) {
+		if err := sdk.EnsureTool("yt-dlp"); err != nil {
+			mu.Unlock()
+			writeJSON(w, map[string]string{"error": fmt.Sprintf("yt-dlp: %v", err)})
+			return
+		}
+	}
+
 	// Resolve URL if needed (SoundCloud, YouTube, etc.)
 	playURL := req.URL
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -285,7 +299,18 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func isDirectAudioURL(url string) bool {
-	return len(url) > 0 && (hasExtension(url, ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m3u8") || isHTTPStream(url))
+	if len(url) == 0 {
+		return false
+	}
+	// Only direct audio files need no resolution
+	if hasExtension(url, ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m3u8", ".opus") {
+		return true
+	}
+	// m3u8 HLS streams can go directly to ffmpeg
+	if hasExtension(url, ".m3u8") {
+		return true
+	}
+	return false
 }
 
 func hasExtension(url string, exts ...string) bool {
@@ -295,10 +320,6 @@ func hasExtension(url string, exts ...string) bool {
 		}
 	}
 	return false
-}
-
-func isHTTPStream(url string) bool {
-	return len(url) > 7 && (url[:7] == "http://" || url[:8] == "https://")
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
