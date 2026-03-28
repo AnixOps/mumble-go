@@ -124,7 +124,12 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/*
+          files: |
+            dist/linux-amd64/*
+            dist/linux-arm64/*
+            dist/windows-amd64/*
+            dist/windows-arm64/*
+            dist/SHA256SUMS.txt
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
