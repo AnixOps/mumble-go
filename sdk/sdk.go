@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"os/exec"
 
 	"mumble-go/client"
 	"mumble-go/identity"
@@ -193,7 +194,86 @@ func (c *Client) PlayRemote(ctx context.Context, input string) error {
 	if err != nil {
 		return err
 	}
+	// For HLS streams (m3u8), use streaming mode with yt-dlp pipe
+	if len(resolved) > 5 && resolved[len(resolved)-5:] == ".m3u8" {
+		return c.playHLSStream(ctx, resolved)
+	}
 	return c.PlayFile(ctx, resolved)
+}
+
+func (c *Client) playHLSStream(ctx context.Context, m3u8URL string) error {
+	// Use yt-dlp to pipe the stream through ffmpeg
+	cmd := exec.CommandContext(ctx, resolveTool("yt-dlp"),
+		"--no-playlist",
+		"-o", "-",
+		"-f", "bestaudio",
+		"--",
+		m3u8URL,
+	)
+
+	ffmpegCmd := exec.CommandContext(ctx, resolveTool("ffmpeg"),
+		"-nostdin",
+		"-loglevel", "warning",
+		"-i", "pipe:0",
+		"-f", "s16le",
+		"-ar", "48000",
+		"-ac", "1",
+		"pipe:1",
+	)
+
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	ffmpegCmd.Stdin = pipe
+
+	stdout, err := ffmpegCmd.StdoutPipe()
+	if err != nil {
+		pipe.Close()
+		return fmt.Errorf("ffmpeg stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		pipe.Close()
+		return fmt.Errorf("start yt-dlp: %w", err)
+	}
+	if err := ffmpegCmd.Start(); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		pipe.Close()
+		return fmt.Errorf("start ffmpeg: %w", err)
+	}
+
+	// Stream using our own loop
+	buf := make([]byte, 960*2)
+	for {
+		select {
+		case <-ctx.Done():
+			cmd.Process.Kill()
+			ffmpegCmd.Process.Kill()
+			cmd.Wait()
+			ffmpegCmd.Wait()
+			return ctx.Err()
+		default:
+		}
+		n, err := stdout.Read(buf)
+		if n > 0 {
+			if err := c.SendPCM(buf[:n]); err != nil {
+				cmd.Process.Kill()
+				ffmpegCmd.Process.Kill()
+				cmd.Wait()
+				ffmpegCmd.Wait()
+				return err
+			}
+		}
+		if err != nil {
+			cmd.Process.Kill()
+			ffmpegCmd.Process.Kill()
+			cmd.Wait()
+			ffmpegCmd.Wait()
+			return nil // EOF or error
+		}
+	}
 }
 
 func (c *Client) Close() error {
